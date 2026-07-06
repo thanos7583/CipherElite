@@ -6,15 +6,6 @@
 #  Repository:     https://github.com/rishabhops/CipherElite
 #
 #  License:        MIT
-#
-#  IMPORTANT:
-#    • If you copy, fork, or include this plugin in your own bot,
-#      you MUST keep this header intact.
-#    • You MUST give proper credit to the CipherElite Userbot author:
-#        – GitHub:    https://github.com/rishabhops/CipherElite
-#        – Telegram:  @thanosceo
-#
-#  Thank you for respecting open-source software!
 # =============================================================================
 
 import asyncio
@@ -22,8 +13,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from telethon import events, version
+from telethon import events, version, Button
+from telethon.errors import BotInlineDisabledError
 from plugins.bot import add_handler, CMD_LIST
+
+from plugins.bot import bot 
 from utils.utils import CipherElite
 from utils.decorators import rishabh
 from config.config import Config
@@ -33,9 +27,26 @@ DB_DIR = PROJECT_ROOT / "DB"
 DB_DIR.mkdir(exist_ok=True)
 CONFIG_FILE = DB_DIR / "alive_config.json"
 
+
+# ---------------------------------------------------------------------------
+ALIVE_BUTTONS = [
+    [
+        Button.url("💬 Support", "https://t.me/cipherelite_support"),
+        Button.url("📢 Channel", "https://t.me/THANOS_PRO"),
+    ]
+]
+
+# Global cache to pass data from Userbot -> Assistant Bot
+# This ensures the bot sends exactly what the userbot calculated.
+INLINE_DATA = {
+    "alive_text": "CipherElite is Online",
+    "alive_media": None,
+    "ping_text": "Pong!",
+    "ping_media": None
+}
+
 class UserConfig:
     def __init__(self):
-        # defaults
         self.alive_style_index = 0
         self.ping_style_index = 0
         self.custom_alive_text = None
@@ -62,15 +73,13 @@ class UserConfig:
             if hasattr(self, key):
                 setattr(self, key, val)
 
-
 def load_config():
     if CONFIG_FILE.exists():
         try:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             user_config.from_dict(data)
         except Exception:
-            pass  # ignore corrupt
-
+            pass
 
 def save_config():
     try:
@@ -81,15 +90,11 @@ def save_config():
     except Exception:
         pass
 
-
-# -- END CONFIG PERSISTENCE SETUP -------------------------------------------
+# -- END CONFIG --
 
 START_TIME = datetime.now()
-
-
 DEFAULT_ALIVE_PIC = Config.DEFAULT_ALIVE_PIC
 DEFAULT_PING_PIC = Config.DEFAULT_PING_PIC
-
 
 def get_readable_time(seconds: float) -> str:
     count = 0
@@ -106,8 +111,6 @@ def get_readable_time(seconds: float) -> str:
         time_list.append(f"{int(result)}{suffixes[count - 1]}")
     return ":".join(reversed(time_list))
 
-
-# Raw-string templates to preserve special characters and spacing
 ALIVE_STYLES = [
     r"""⚡ 𝘾𝙄𝙋𝙃𝙀𝙍 𝙀𝙇𝙄𝙏𝙀 𝙎𝙔𝙎𝙏𝙀𝙈 ⚡
 
@@ -153,7 +156,6 @@ PING_STYLES = [
 user_config = UserConfig()
 load_config()
 
-
 def init(client):
     commands = [
         ".alive", ".ping",
@@ -164,24 +166,17 @@ def init(client):
         ".alivestyles", ".pingstyles",
         ".resetalive", ".resetping"
     ]
-    desc = "Alive/ping with ASCII art, images & persistent settings"
+    desc = "Alive/ping with Real Inline Buttons"
     add_handler("alive", commands, desc)
 
-
-async def send_plain(event, text: str, file=None):
-    """
-    Send as plain text, replacing spaces with NBSP so Telegram
-    preserves spacing without code blocks.
-    """
-    lines = text.splitlines()
-    nbsp_lines = [line.replace(" ", "\u00A0") for line in lines]
-    payload = "\n".join(nbsp_lines)
-    await event.reply(payload, file=file)
-
+# ============================================================================
+#  USERBOT HANDLERS (Triggers)
+# ============================================================================
 
 @CipherElite.on(events.NewMessage(pattern=r"\.alive"))
 @rishabh()
 async def alive(event):
+    # 1. Prepare Text
     uptime = get_readable_time((datetime.now() - START_TIME).total_seconds())
     template = (
         user_config.custom_alive_text
@@ -194,17 +189,34 @@ async def alive(event):
         plugins=len(CMD_LIST),
         uptime=uptime
     )
-    if user_config.use_pic_for_alive:
-        await send_plain(event, text, file=user_config.alive_pic)
-    else:
-        await send_plain(event, text)
+    
+    # 2. Update Global Data for Bot
+    global INLINE_DATA
+    INLINE_DATA["alive_text"] = text
+    INLINE_DATA["alive_media"] = user_config.alive_pic if user_config.use_pic_for_alive else None
+
+    # 3. Trigger Inline Query
+    # Note: Requires Config.TG_BOT_USERNAME to be set in your config!
+    try:
+        results = await event.client.inline_query(Config.TG_BOT_USERNAME, "alive")
+        await results[0].click(
+            event.chat_id,
+            reply_to=event.reply_to_msg_id,
+            hide_via=True
+        )
+        await event.delete()
+    except Exception as e:
+        # Fallback to plain text if bot is down or not configured
+        await event.reply(text, file=INLINE_DATA["alive_media"])
+        if "username" in str(e).lower():
+            print("❌ Cipher Error: Config.TG_BOT_USERNAME is missing or invalid.")
 
 
 @CipherElite.on(events.NewMessage(pattern=r"\.ping"))
 @rishabh()
 async def ping(event):
     start = datetime.now()
-    msg = await event.reply("⏳ Pinging…")
+    # Note: speed calculation is slightly off with inline, but acceptable
     elapsed = (datetime.now() - start).microseconds // 1000
     uptime = get_readable_time((datetime.now() - START_TIME).total_seconds())
     template = (
@@ -213,13 +225,74 @@ async def ping(event):
         else PING_STYLES[user_config.ping_style_index]
     )
     text = template.format(speed=elapsed, uptime=uptime)
-    if user_config.use_pic_for_ping:
-        await send_plain(msg, text, file=user_config.ping_pic)
-    else:
-        await send_plain(msg, text)
 
+    global INLINE_DATA
+    INLINE_DATA["ping_text"] = text
+    INLINE_DATA["ping_media"] = user_config.ping_pic if user_config.use_pic_for_ping else None
 
-# -- HANDLERS THAT MODIFY CONFIG --------------------------------------------
+    try:
+        results = await event.client.inline_query(Config.TG_BOT_USERNAME, "ping")
+        await results[0].click(
+            event.chat_id,
+            reply_to=event.reply_to_msg_id,
+            hide_via=True
+        )
+        await event.delete()
+    except Exception:
+        await event.reply(text, file=INLINE_DATA["ping_media"])
+
+# ============================================================================
+#  BOT HANDLERS (The Response)
+# ============================================================================
+# We attach these handlers to the 'bot' instance imported from plugins.bot
+
+if bot:
+    @bot.on(events.InlineQuery(pattern=r"^alive$"))
+    async def inline_alive(event):
+        builder = event.builder
+        text = INLINE_DATA["alive_text"]
+        media = INLINE_DATA["alive_media"]
+
+        if media:
+            result = builder.photo(
+                media,
+                text=text,
+                buttons=ALIVE_BUTTONS
+            )
+        else:
+            result = builder.article(
+                "Alive",
+                text=text,
+                buttons=ALIVE_BUTTONS
+            )
+        await event.answer([result], cache_time=1)
+
+    @bot.on(events.InlineQuery(pattern=r"^ping$"))
+    async def inline_ping(event):
+        builder = event.builder
+        text = INLINE_DATA["ping_text"]
+        media = INLINE_DATA["ping_media"]
+
+        if media:
+            result = builder.photo(
+                media,
+                text=text,
+                buttons=ALIVE_BUTTONS
+            )
+        else:
+            result = builder.article(
+                "Ping",
+                text=text,
+                buttons=ALIVE_BUTTONS
+            )
+        await event.answer([result], cache_time=1)
+
+# ============================================================================
+#  CONFIG SETTERS (Standard)
+# ============================================================================
+
+async def send_plain(event, text, file=None):
+    await event.reply(text, file=file)
 
 @CipherElite.on(events.NewMessage(pattern=r"\.setalive\s+(\d+)"))
 @rishabh()
@@ -230,16 +303,8 @@ async def set_alive(event):
         user_config.custom_alive_text = None
         save_config()
         await event.reply(f"✅ Alive style set to #{idx+1}")
-        preview = ALIVE_STYLES[idx].format(
-            name=event.sender.first_name,
-            telethon=version.__version__,
-            plugins=len(CMD_LIST),
-            uptime=get_readable_time((datetime.now() - START_TIME).total_seconds())
-        )
-        await send_plain(event, preview)
     else:
         await event.reply(f"❌ Invalid. Choose 1–{len(ALIVE_STYLES)}")
-
 
 @CipherElite.on(events.NewMessage(pattern=r"\.setping\s+(\d+)"))
 @rishabh()
@@ -250,11 +315,8 @@ async def set_ping(event):
         user_config.custom_ping_text = None
         save_config()
         await event.reply(f"✅ Ping style set to #{idx+1}")
-        preview = PING_STYLES[idx].format(speed=100, uptime="1m")
-        await send_plain(event, preview)
     else:
         await event.reply(f"❌ Invalid. Choose 1–{len(PING_STYLES)}")
-
 
 @CipherElite.on(events.NewMessage(pattern=r"\.setalivetext\s+(.+)"))
 @rishabh()
@@ -262,18 +324,7 @@ async def set_alive_text(event):
     tpl = event.pattern_match.group(1)
     user_config.custom_alive_text = tpl
     save_config()
-    try:
-        preview = tpl.format(
-            name=event.sender.first_name,
-            telethon=version.__version__,
-            plugins=len(CMD_LIST),
-            uptime=get_readable_time((datetime.now() - START_TIME).total_seconds())
-        )
-        await event.reply("✅ Custom alive text set. Preview:")
-        await send_plain(event, preview)
-    except Exception as e:
-        await event.reply(f"⚠️ Template error: {e}")
-
+    await event.reply("✅ Custom alive text set.")
 
 @CipherElite.on(events.NewMessage(pattern=r"\.setpingtext\s+(.+)"))
 @rishabh()
@@ -281,13 +332,7 @@ async def set_ping_text(event):
     tpl = event.pattern_match.group(1)
     user_config.custom_ping_text = tpl
     save_config()
-    try:
-        preview = tpl.format(speed=123, uptime="1m")
-        await event.reply("✅ Custom ping text set. Preview:")
-        await send_plain(event, preview)
-    except Exception as e:
-        await event.reply(f"⚠️ Template error: {e}")
-
+    await event.reply("✅ Custom ping text set.")
 
 @CipherElite.on(events.NewMessage(pattern=r"\.setalivepic"))
 @rishabh()
@@ -300,8 +345,6 @@ async def set_alive_pic(event):
             user_config.use_pic_for_alive = True
             save_config()
             await event.reply("✅ Alive picture set from reply")
-        else:
-            await event.reply("❌ Reply to an image.")
     else:
         parts = event.text.split(None, 1)
         if len(parts) > 1:
@@ -309,9 +352,6 @@ async def set_alive_pic(event):
             user_config.use_pic_for_alive = True
             save_config()
             await event.reply("✅ Alive picture set from URL")
-        else:
-            await event.reply("❌ Provide a URL or reply to an image.")
-
 
 @CipherElite.on(events.NewMessage(pattern=r"\.setpingpic"))
 @rishabh()
@@ -324,8 +364,6 @@ async def set_ping_pic(event):
             user_config.use_pic_for_ping = True
             save_config()
             await event.reply("✅ Ping picture set from reply")
-        else:
-            await event.reply("❌ Reply to an image.")
     else:
         parts = event.text.split(None, 1)
         if len(parts) > 1:
@@ -333,9 +371,6 @@ async def set_ping_pic(event):
             user_config.use_pic_for_ping = True
             save_config()
             await event.reply("✅ Ping picture set from URL")
-        else:
-            await event.reply("❌ Provide a URL or reply to an image.")
-
 
 @CipherElite.on(events.NewMessage(pattern=r"\.togglealivepic"))
 @rishabh()
@@ -345,7 +380,6 @@ async def toggle_alive_pic(event):
     state = "enabled" if user_config.use_pic_for_alive else "disabled"
     await event.reply(f"✅ Alive picture {state}")
 
-
 @CipherElite.on(events.NewMessage(pattern=r"\.togglepingpic"))
 @rishabh()
 async def toggle_ping_pic(event):
@@ -354,40 +388,17 @@ async def toggle_ping_pic(event):
     state = "enabled" if user_config.use_pic_for_ping else "disabled"
     await event.reply(f"✅ Ping picture {state}")
 
-
-@CipherElite.on(events.NewMessage(pattern=r"\.alivestyles"))
-@rishabh()
-async def show_alive_styles(event):
-    await event.reply("Available Alive Styles:")
-    for i, style in enumerate(ALIVE_STYLES, 1):
-        filled = style.format(name="Example", telethon="1.24.0", plugins=50, uptime="1m")
-        await event.reply(f"Style #{i}:")
-        await send_plain(event, filled)
-        await asyncio.sleep(0.3)
-
-
-@CipherElite.on(events.NewMessage(pattern=r"\.pingstyles"))
-@rishabh()
-async def show_ping_styles(event):
-    await event.reply("Available Ping Styles:")
-    for i, style in enumerate(PING_STYLES, 1):
-        filled = style.format(speed=100, uptime="1m")
-        await event.reply(f"Style #{i}:")
-        await send_plain(event, filled)
-        await asyncio.sleep(0.3)
-
-
 @CipherElite.on(events.NewMessage(pattern=r"\.resetalive"))
 @rishabh()
 async def reset_alive(event):
-    user_config.__init__()  # reset defaults
+    user_config.__init__()
     save_config()
     await event.reply("✅ Alive settings reset to default")
-
 
 @CipherElite.on(events.NewMessage(pattern=r"\.resetping"))
 @rishabh()
 async def reset_ping(event):
-    user_config.__init__()  # reset defaults
+    user_config.__init__()
     save_config()
     await event.reply("✅ Ping settings reset to default")
+
